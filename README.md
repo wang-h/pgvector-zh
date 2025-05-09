@@ -51,9 +51,9 @@ docker compose logs -f
 
 ### 初始化说明
 
-首次启动容器时，`init-database.sh`脚本会自动执行以下操作：
-- 创建pg_jieba和vector扩展
-- 配置jieba_cfg文本搜索配置
+首次启动容器时，`init.sql`脚本会自动执行以下操作：
+- 创建 vector 和 pg_jieba 扩展
+- 配置 jieba_cfg 文本搜索配置（使用 jieba 解析器）
 
 如果您的数据卷已经存在，初始化脚本不会自动执行。您可以通过以下方式手动执行：
 
@@ -64,6 +64,7 @@ docker compose up -d
 
 # 或者手动执行SQL命令
 docker compose exec postgres psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_jieba;"
+docker compose exec postgres psql -U postgres -c "CREATE TEXT SEARCH CONFIGURATION jieba_cfg (PARSER = jieba); ALTER TEXT SEARCH CONFIGURATION jieba_cfg ADD MAPPING FOR n,v,a,i,e,l WITH simple;"
 ```
 
 ### 连接到数据库
@@ -71,6 +72,21 @@ docker compose exec postgres psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS
 ```bash
 # 连接到PostgreSQL
 docker compose exec postgres psql -U postgres
+```
+
+### 验证安装是否成功
+
+您可以通过以下命令检查扩展和文本搜索配置是否已成功安装：
+
+```bash
+# 检查已安装的扩展
+docker compose exec postgres psql -U postgres -c "SELECT extname, extversion FROM pg_extension;"
+
+# 检查是否有jieba解析器
+docker compose exec postgres psql -U postgres -c "SELECT prsname FROM pg_ts_parser WHERE prsname LIKE 'jieba%';"
+
+# 检查jieba_cfg是否已创建
+docker compose exec postgres psql -U postgres -c "SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jieba_cfg';"
 ```
 
 ### 使用pgvector创建向量数据
@@ -143,9 +159,10 @@ SELECT title, content,
        ts_rank(tsv_content, to_tsquery('jieba_cfg', '数据库')) AS content_rank
 FROM articles
 WHERE tsv_title @@ to_tsquery('jieba_cfg', '数据库') OR 
-      tsv_content @@ to_tsquery('jieba_cfg', '数据库')
-ORDER BY title_rank + content_rank DESC;
+      tsv_content @@ to_tsquery('jieba_cfg', '数据库');
 ```
+
+预期结果应当包含 "PostgreSQL数据库简介" 这篇文章，因为它的标题中包含 "数据库" 这个词。
 
 ## 故障排除
 
@@ -153,11 +170,13 @@ ORDER BY title_rank + content_rank DESC;
 
 2. **jieba_cfg配置未找到**：如果遇到文本搜索配置相关错误，可能是初始化脚本没有执行。连接到数据库后手动创建所需配置：
    ```sql
-   CREATE TEXT SEARCH CONFIGURATION jieba_cfg (PARSER = jieba_parser);
+   CREATE TEXT SEARCH CONFIGURATION jieba_cfg (PARSER = jieba);
    ALTER TEXT SEARCH CONFIGURATION jieba_cfg ADD MAPPING FOR n,v,a,i,e,l WITH simple;
    ```
 
-3. **重置数据库**：如需完全重置，可使用以下命令删除所有数据并重新初始化：
+3. **找不到jieba解析器**：确保pg_jieba扩展已正确加载，并且在`shared_preload_libraries`中包含了`pg_jieba.so`。使用`SHOW shared_preload_libraries;`命令检查。
+
+4. **重置数据库**：如需完全重置，可使用以下命令删除所有数据并重新初始化：
    ```bash
    docker compose down -v
    docker compose up -d
@@ -165,7 +184,41 @@ ORDER BY title_rank + content_rank DESC;
 
 ## 高级配置
 
-初始化脚本已自动配置了基础的中文分词设置。如需进一步自定义，可以修改 `init-database.sh` 文件。
+pgvector支持多种维度的向量，默认示例使用的是3维向量，实际应用中通常会使用高维向量（如OpenAI模型生成的1536维嵌入向量）。
+
+pg_jieba提供了四种不同的解析器模式：
+- `jieba`：标准模式，默认使用
+- `jiebaqry`：查询模式
+- `jiebamp`：最大概率模式
+- `jiebahmm`：隐马尔可夫模型模式
+
+您可以根据需要选择不同的解析器模式创建文本搜索配置。
+
+## 在Prisma应用中使用
+
+如果您的应用使用Prisma ORM，确保在`schema.prisma`文件中开启PostgreSQL扩展支持：
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+```
+
+对于向量字段，可以使用`Unsupported`类型：
+
+```prisma
+model Chunk {
+  // ... 其他字段
+  embedding Unsupported("vector(1536)")? // 向量嵌入，支持 pgvector
+}
+```
 
 ## 参考资料
 
