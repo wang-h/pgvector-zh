@@ -1,6 +1,9 @@
 # PGVector-ZH: PostgreSQL向量搜索与中文分词
+# PGVector-ZH: PostgreSQL Vector Search with Chinese Word Segmentation
 
-本项目提供了一个集成了向量搜索(pgvector)、中文分词(pg_jieba)和图数据库功能(Apache AGE)的PostgreSQL Docker镜像，方便处理中文向量搜索、全文搜索和图数据需求。
+[English Version](#english-version) | [中文版本](#pgvector-zh-postgresql向量搜索与中文分词)
+
+本项目提供了一个集成了向量搜索(pgvector)、中文分词(pg_jieba)和图数据库功能(Apache AGE)的PostgreSQL Docker镜像，方便处理中文向量搜索、全文搜索和图数据需求。支持BM25检索、向量检索、Graph检索，总之，我希望构建一个pg的docker镜像解决所有问题。
 
 ## 功能特点
 
@@ -319,13 +322,6 @@ model Chunk {
 }
 ```
 
-## 参考资料
-
-- [pg_jieba GitHub仓库](https://github.com/jaiminpan/pg_jieba)
-- [pgvector GitHub仓库](https://github.com/pgvector/pgvector)
-- [Apache AGE GitHub仓库](https://github.com/apache/age)
-- [Apache AGE官方文档](https://age.apache.org/)
-- [PostgreSQL 全文检索安装 pg_jieba 中文插件](https://www.zhangbj.com/p/1750.html)
 
 ## 图数据库AGE拓展，使用递归CTE查找路径
 
@@ -358,4 +354,380 @@ WITH RECURSIVE path AS (
     WHERE NOT e.target_id = ANY(p.path)
 )
 SELECT * FROM path;
+```
+
+
+## 参考资料
+
+- [pg_jieba GitHub仓库](https://github.com/jaiminpan/pg_jieba)
+- [pgvector GitHub仓库](https://github.com/pgvector/pgvector)
+- [Apache AGE GitHub仓库](https://github.com/apache/age)
+- [Apache AGE官方文档](https://age.apache.org/)
+- [PostgreSQL 全文检索安装 pg_jieba 中文插件](https://www.zhangbj.com/p/1750.html)
+
+---
+
+## English Version
+
+# PGVector-ZH: PostgreSQL Vector Search with Chinese Word Segmentation
+
+This project provides a PostgreSQL Docker image integrated with vector search (pgvector), Chinese word segmentation (pg_jieba), and graph database functionality (Apache AGE), making it convenient to handle Chinese vector search, full-text search, and graph data requirements.
+
+## Features
+
+- Based on PostgreSQL 16
+- Integrated pgvector extension for vector search
+- Integrated pg_jieba extension for Chinese word segmentation, solving the BM25 score 0 issue
+- Integrated Apache AGE extension for graph database functionality (supports pg12-16 only)
+- Pre-configured optimized Chinese full-text search configuration
+- Uses Chinese mirror sources to accelerate building
+
+## Prerequisites
+
+The project root directory needs to have a complete `pg_jieba` directory, including all necessary subdirectories and dependencies:
+
+```
+pg_jieba/                      # pg_jieba main directory
+├── libjieba/                  # libjieba submodule directory
+│   ├── deps/                  # Directory for dependencies
+│   │   └── limonp/           # limonp dependency (required)
+│   │       └── include/      # limonp header files directory
+│   │           └── limonp/   # Contains Logging.hpp and other header files
+│   └── include/              # cppjieba header files directory
+│       └── cppjieba/         # Contains Jieba.hpp and other header files
+├── CMakeLists.txt            # Compilation configuration file
+├── jieba.cpp                 # Source code file
+└── pg_jieba.c                # Source code file
+```
+
+You can get the complete pg_jieba by:
+
+```bash
+# Clone pg_jieba repository and initialize all submodules
+git clone https://github.com/jaiminpan/pg_jieba.git
+cd pg_jieba
+git submodule update --init --recursive
+```
+
+## Usage
+
+### Starting the Service
+
+```bash
+# Build and start the container (first start)
+docker compose up -d
+
+# View logs
+docker compose logs -f
+```
+
+### Initialization Information
+
+When the container is started for the first time, the `init.sql` script will automatically perform the following operations:
+- Create vector and pg_jieba extensions
+- Configure jieba_cfg text search configuration (using jieba parser)
+
+If your data volume already exists, the initialization script will not execute automatically. You can execute it manually:
+
+```bash
+# Delete existing data volume and restart (will clear all data)
+docker compose down -v
+docker compose up -d
+
+# Or manually execute SQL commands
+docker compose exec postgres psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS pg_jieba;"
+docker compose exec postgres psql -U postgres -c "CREATE TEXT SEARCH CONFIGURATION jieba_cfg (PARSER = jieba); ALTER TEXT SEARCH CONFIGURATION jieba_cfg ADD MAPPING FOR n,v,a,i,e,l WITH simple;"
+```
+
+### Connecting to the Database
+
+```bash
+# Connect to PostgreSQL
+docker compose exec postgres psql -U postgres
+```
+
+### Verifying Successful Installation
+
+You can check if the extensions and text search configuration have been successfully installed with the following commands:
+
+```bash
+# Check installed extensions
+docker compose exec postgres psql -U postgres -c "SELECT extname, extversion FROM pg_extension;"
+
+# Check if jieba parser exists
+docker compose exec postgres psql -U postgres -c "SELECT prsname FROM pg_ts_parser WHERE prsname LIKE 'jieba%';"
+
+# Check if jieba_cfg has been created
+docker compose exec postgres psql -U postgres -c "SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jieba_cfg';"
+
+# Check if AGE graph has been created
+docker compose exec postgres psql -U postgres -c "SELECT * FROM ag_catalog.ag_graph;"
+```
+
+### Creating Vector Data with pgvector
+
+Before using pgvector-related functionality, ensure the extension is loaded:
+
+```sql
+-- Check if the extension is loaded
+SELECT * FROM pg_extension;
+
+-- Manually create the vector extension if it doesn't exist
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Create a test table
+CREATE TABLE items (
+  id SERIAL PRIMARY KEY,
+  embedding VECTOR(3),
+  name TEXT,
+  description TEXT
+);
+
+-- Insert some test data
+INSERT INTO items (embedding, name, description)
+VALUES ('[1,2,3]', 'Laptop', 'This is a high-performance laptop'),
+       ('[4,5,6]', 'Smartphone', 'This is a powerful smartphone'),
+       ('[7,8,9]', 'Tablet', 'This is a lightweight tablet');
+
+-- Use vector search to query the most similar items
+SELECT name, description, embedding <-> '[3,3,3]' as distance
+FROM items
+ORDER BY distance
+LIMIT 5;
+```
+
+### Using pg_jieba for Chinese Word Segmentation Search
+
+Before using pg_jieba-related functionality, ensure the extension is loaded:
+
+```sql
+-- Check if the extension is loaded
+SELECT * FROM pg_extension;
+
+-- Manually create the pg_jieba extension if it doesn't exist
+CREATE EXTENSION IF NOT EXISTS pg_jieba;
+
+-- Create a full-text search test table
+CREATE TABLE articles (
+  id SERIAL PRIMARY KEY,
+  title TEXT,
+  content TEXT
+);
+
+-- Add full-text search index
+ALTER TABLE articles ADD COLUMN tsv_title TSVECTOR GENERATED ALWAYS AS (to_tsvector('jieba_cfg', title)) STORED;
+ALTER TABLE articles ADD COLUMN tsv_content TSVECTOR GENERATED ALWAYS AS (to_tsvector('jieba_cfg', content)) STORED;
+
+-- Create GIN index to speed up search
+CREATE INDEX articles_tsv_title_idx ON articles USING GIN(tsv_title);
+CREATE INDEX articles_tsv_content_idx ON articles USING GIN(tsv_content);
+
+-- Insert test data
+INSERT INTO articles (title, content)
+VALUES ('PostgreSQL Database Introduction', 'PostgreSQL is a powerful open-source relational database system'),
+       ('Chinese Full-Text Search Technology', 'Full-text search is an important technology in information retrieval, enabling quick finding of relevant information from large amounts of text'),
+       ('Artificial Intelligence and Big Data', 'Artificial intelligence technology combined with big data analysis can provide more intelligent decision support');
+
+-- Use full-text search query
+SELECT title, content, 
+       ts_rank(tsv_title, to_tsquery('jieba_cfg', 'database')) AS title_rank,
+       ts_rank(tsv_content, to_tsquery('jieba_cfg', 'database')) AS content_rank
+FROM articles
+WHERE tsv_title @@ to_tsquery('jieba_cfg', 'database') OR 
+      tsv_content @@ to_tsquery('jieba_cfg', 'database');
+```
+
+The expected result should include the article "PostgreSQL Database Introduction" because its title contains the word "database".
+
+## Using Apache AGE for Graph Data Operations
+
+Apache AGE is a graph database extension for PostgreSQL that supports graph data storage and Cypher query syntax. Before using it, ensure the AGE extension is loaded:
+
+```sql
+-- Check if AGE extension is loaded
+SELECT * FROM pg_extension WHERE extname = 'age';
+
+-- Load AGE, set search path
+LOAD 'age';
+SET search_path = ag_catalog, "$user", public;
+
+-- Create a new graph
+SELECT create_graph('my_graph');
+
+-- Create a node
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p:Person {name: 'John', age: 30})
+    RETURN p
+$$) as (v agtype);
+
+-- Create multiple nodes
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p1:Person {name: 'Alice', age: 25}),
+           (p2:Person {name: 'Bob', age: 35})
+    RETURN p1, p2
+$$) as (v1 agtype, v2 agtype);
+
+-- Create an edge
+SELECT * FROM cypher('my_graph', $$ 
+    MATCH (p1:Person {name: 'John'}), (p2:Person {name: 'Alice'}) 
+    CREATE (p1)-[r:FRIEND {since: '2023'}]->(p2)
+    RETURN r
+$$) AS (e agtype);
+
+-- Query all people
+SELECT * FROM cypher('my_graph', $$
+    MATCH (p:Person)
+    RETURN p.name AS name, p.age AS age
+$$) as (name agtype, age agtype);
+
+-- Query friendship relationships
+SELECT * FROM cypher('my_graph', $$
+    MATCH (a:Person)-[r:FRIEND]->(b:Person)
+    RETURN a.name AS person1, b.name AS person2, r.since AS since
+$$) as (person1 agtype, person2 agtype, since agtype);
+
+-- Path query
+SELECT * FROM cypher('my_graph', $$
+    MATCH p = (a:Person {name: 'John'})-[*1..3]->(b:Person)
+    RETURN p
+$$) as (path agtype);
+```
+
+### Combining Vector Search and Graph Database
+
+You can combine pgvector vector search with Apache AGE graph database to implement more complex knowledge retrieval applications:
+
+```sql
+-- Create a person vector table
+CREATE TABLE person_embeddings (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    embedding VECTOR(384)
+);
+
+-- Insert some person vector data
+INSERT INTO person_embeddings (name, embedding)
+VALUES 
+    ('John', '[0.1, 0.2, 0.3, ... ]'),
+    ('Alice', '[0.2, 0.3, 0.4, ... ]'),
+    ('Bob', '[0.3, 0.4, 0.5, ... ]');
+
+-- Create corresponding person nodes in the graph
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p:Person {name: 'John', person_id: 1})
+    RETURN p
+$$) as (v agtype);
+
+-- Query the most similar people, and query their relationships in the graph
+WITH similar_persons AS (
+    SELECT name, id
+    FROM person_embeddings
+    ORDER BY embedding <-> '[0.15, 0.25, 0.35, ... ]'
+    LIMIT 3
+)
+SELECT 
+    sp.name,
+    (SELECT * FROM cypher('my_graph', $$
+        MATCH (p:Person {name: $1})-[r]->(other)
+        RETURN collect(other.name) AS connected_to
+    $$, sp.name) AS (connected_to agtype)) AS connections
+FROM similar_persons sp;
+```
+
+## Troubleshooting
+
+1. **Cannot find vector type**: If you encounter the `ERROR: type "vector" does not exist` error, it means the vector extension is not correctly loaded. Use `CREATE EXTENSION vector;` to create the extension.
+
+2. **jieba_cfg configuration not found**: If you encounter errors related to text search configuration, the initialization script may not have executed. Manually create the required configuration after connecting to the database:
+   ```sql
+   CREATE TEXT SEARCH CONFIGURATION jieba_cfg (PARSER = jieba);
+   ALTER TEXT SEARCH CONFIGURATION jieba_cfg ADD MAPPING FOR n,v,a,i,e,l WITH simple;
+   ```
+
+3. **Cannot find jieba parser**: Ensure that the pg_jieba extension is correctly loaded and that `pg_jieba.so` is included in the `shared_preload_libraries`. Check with the `SHOW shared_preload_libraries;` command.
+
+4. **Reset database**: If you need to completely reset, you can use the following commands to delete all data and reinitialize:
+   ```bash
+   docker compose down -v
+   docker compose up -d
+   ```
+
+## Advanced Configuration
+
+pgvector supports vectors of various dimensions. The default example uses 3-dimensional vectors, but in practical applications, high-dimensional vectors are typically used (such as 1536-dimensional embedding vectors generated by OpenAI models).
+
+pg_jieba provides four different parser modes:
+- `jieba`: Standard mode, used by default
+- `jiebaqry`: Query mode
+- `jiebamp`: Maximum probability mode
+- `jiebahmm`: Hidden Markov Model mode
+
+You can create text search configurations with different parser modes according to your needs.
+
+## Using in Prisma Applications
+
+If your application uses Prisma ORM, ensure that PostgreSQL extension support is enabled in your `schema.prisma` file:
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+```
+
+For vector fields, you can use the `Unsupported` type:
+
+```prisma
+model Chunk {
+  // ... other fields
+  embedding Unsupported("vector(1536)")? // Vector embedding, supports pgvector
+}
+```
+
+
+## Graph Database AGE Extension, Using Recursive CTE to Find Paths
+
+```sql
+-- Create node and edge tables
+CREATE TABLE nodes (
+    id SERIAL PRIMARY KEY,
+    properties JSONB
+);
+
+CREATE TABLE edges (
+    id SERIAL PRIMARY KEY,
+    source_id INTEGER REFERENCES nodes(id),
+    target_id INTEGER REFERENCES nodes(id),
+    type TEXT,
+    properties JSONB
+);
+
+-- Use recursive CTE to find paths
+WITH RECURSIVE path AS (
+    SELECT source_id, target_id, ARRAY[source_id, target_id] AS path
+    FROM edges
+    WHERE source_id = 1
+    
+    UNION ALL
+    
+    SELECT e.source_id, e.target_id, p.path || e.target_id
+    FROM edges e
+    JOIN path p ON e.source_id = p.target_id
+    WHERE NOT e.target_id = ANY(p.path)
+)
+SELECT * FROM path;
 ``` 
+
+## References
+
+- [pg_jieba GitHub Repository](https://github.com/jaiminpan/pg_jieba)
+- [pgvector GitHub Repository](https://github.com/pgvector/pgvector)
+- [Apache AGE GitHub Repository](https://github.com/apache/age)
+- [Apache AGE Official Documentation](https://age.apache.org/)
+- [PostgreSQL Full-Text Search Installing pg_jieba Chinese Plugin](https://www.zhangbj.com/p/1750.html)
