@@ -1,6 +1,7 @@
 -- 创建必要的扩展
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_jieba;
+CREATE EXTENSION IF NOT EXISTS age;
 
 -- 创建基于pg_jieba的中文全文搜索配置
 DO $BLOCK$
@@ -20,6 +21,9 @@ BEGIN
 END;
 $BLOCK$;
 
--- 为content_with_weight列创建或更新GIN索引
-CREATE INDEX IF NOT EXISTS idx_chunk_content_fts_chinese
-ON "Chunk" USING GIN (to_tsvector('jieba_cfg', content_with_weight)); 
+-- 加载AGE扩展并设置搜索路径
+LOAD 'age';
+SET search_path = ag_catalog, "$user", public;
+
+-- 创建一个示例图
+SELECT create_graph('sample_graph');

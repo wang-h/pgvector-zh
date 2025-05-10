@@ -1,12 +1,13 @@
 # PGVector-ZH: PostgreSQL向量搜索与中文分词
 
-本项目提供了一个集成了向量搜索(pgvector)和中文分词(pg_jieba)的PostgreSQL Docker镜像，方便处理中文向量搜索和全文搜索需求。
+本项目提供了一个集成了向量搜索(pgvector)、中文分词(pg_jieba)和图数据库功能(Apache AGE)的PostgreSQL Docker镜像，方便处理中文向量搜索、全文搜索和图数据需求。
 
 ## 功能特点
 
-- 基于 PostgreSQL 17 最新版本
+- 基于 PostgreSQL 16 版本
 - 集成 pgvector 扩展用于向量搜索
 - 集成 pg_jieba 扩展用于中文分词，解决BM25分数为0的问题
+- 集成 Apache AGE 扩展用于图数据库功能 （只支持pg12-16）
 - 预配置优化的中文全文搜索配置
 - 使用中国镜像源加速构建
 
@@ -87,6 +88,9 @@ docker compose exec postgres psql -U postgres -c "SELECT prsname FROM pg_ts_pars
 
 # 检查jieba_cfg是否已创建
 docker compose exec postgres psql -U postgres -c "SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jieba_cfg';"
+
+# 检查AGE图是否已创建
+docker compose exec postgres psql -U postgres -c "SELECT * FROM ag_catalog.ag_graph;"
 ```
 
 ### 使用pgvector创建向量数据
@@ -164,6 +168,101 @@ WHERE tsv_title @@ to_tsquery('jieba_cfg', '数据库') OR
 
 预期结果应当包含 "PostgreSQL数据库简介" 这篇文章，因为它的标题中包含 "数据库" 这个词。
 
+## 使用Apache AGE进行图数据操作
+
+Apache AGE是PostgreSQL的图数据库扩展，支持图数据的存储和Cypher查询语法。在使用前，确保AGE扩展已加载：
+
+```sql
+-- 检查AGE扩展是否加载
+SELECT * FROM pg_extension WHERE extname = 'age';
+
+-- 加载AGE，设置搜索路径
+LOAD 'age';
+SET search_path = ag_catalog, "$user", public;
+
+-- 创建一个新图
+SELECT create_graph('my_graph');
+
+-- 创建节点
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p:Person {name: '张三', age: 30})
+    RETURN p
+$$) as (v agtype);
+
+-- 创建多个节点
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p1:Person {name: '李四', age: 25}),
+           (p2:Person {name: '王五', age: 35})
+    RETURN p1, p2
+$$) as (v1 agtype, v2 agtype);
+
+-- 创建边
+SELECT * FROM cypher('my_graph', $$ 
+    MATCH (p1:Person {name: '张三'}), (p2:Person {name: '李四'}) 
+    CREATE (p1)-[r:FRIEND {since: '2023'}]->(p2)
+    RETURN r
+$$) AS (e agtype);
+
+-- 查询所有人
+SELECT * FROM cypher('my_graph', $$
+    MATCH (p:Person)
+    RETURN p.name AS name, p.age AS age
+$$) as (name agtype, age agtype);
+
+-- 查询好友关系
+SELECT * FROM cypher('my_graph', $$
+    MATCH (a:Person)-[r:FRIEND]->(b:Person)
+    RETURN a.name AS person1, b.name AS person2, r.since AS since
+$$) as (person1 agtype, person2 agtype, since agtype);
+
+-- 路径查询
+SELECT * FROM cypher('my_graph', $$
+    MATCH p = (a:Person {name: '张三'})-[*1..3]->(b:Person)
+    RETURN p
+$$) as (path agtype);
+```
+
+### 组合使用向量搜索和图数据库
+
+可以将pgvector向量搜索与Apache AGE图数据库结合使用，实现更复杂的知识检索应用：
+
+```sql
+-- 创建人物向量表
+CREATE TABLE person_embeddings (
+    id SERIAL PRIMARY KEY,
+    name TEXT,
+    embedding VECTOR(384)
+);
+
+-- 插入一些人物向量数据
+INSERT INTO person_embeddings (name, embedding)
+VALUES 
+    ('张三', '[0.1, 0.2, 0.3, ... ]'),
+    ('李四', '[0.2, 0.3, 0.4, ... ]'),
+    ('王五', '[0.3, 0.4, 0.5, ... ]');
+
+-- 在图中创建相应的人物节点
+SELECT * FROM cypher('my_graph', $$
+    CREATE (p:Person {name: '张三', person_id: 1})
+    RETURN p
+$$) as (v agtype);
+
+-- 查询最相似的人物，并查询其在图中的关系
+WITH similar_persons AS (
+    SELECT name, id
+    FROM person_embeddings
+    ORDER BY embedding <-> '[0.15, 0.25, 0.35, ... ]'
+    LIMIT 3
+)
+SELECT 
+    sp.name,
+    (SELECT * FROM cypher('my_graph', $$
+        MATCH (p:Person {name: $1})-[r]->(other)
+        RETURN collect(other.name) AS connected_to
+    $$, sp.name) AS (connected_to agtype)) AS connections
+FROM similar_persons sp;
+```
+
 ## 故障排除
 
 1. **找不到vector类型**：如果遇到`ERROR: type "vector" does not exist`错误，说明vector扩展未正确加载。使用`CREATE EXTENSION vector;`创建扩展。
@@ -224,4 +323,39 @@ model Chunk {
 
 - [pg_jieba GitHub仓库](https://github.com/jaiminpan/pg_jieba)
 - [pgvector GitHub仓库](https://github.com/pgvector/pgvector)
-- [PostgreSQL 全文检索安装 pg_jieba 中文插件](https://www.zhangbj.com/p/1750.html) 
+- [Apache AGE GitHub仓库](https://github.com/apache/age)
+- [Apache AGE官方文档](https://age.apache.org/)
+- [PostgreSQL 全文检索安装 pg_jieba 中文插件](https://www.zhangbj.com/p/1750.html)
+
+## 图数据库AGE拓展，使用递归CTE查找路径
+
+```sql
+-- 创建节点和边表
+CREATE TABLE nodes (
+    id SERIAL PRIMARY KEY,
+    properties JSONB
+);
+
+CREATE TABLE edges (
+    id SERIAL PRIMARY KEY,
+    source_id INTEGER REFERENCES nodes(id),
+    target_id INTEGER REFERENCES nodes(id),
+    type TEXT,
+    properties JSONB
+);
+
+-- 使用递归CTE查找路径
+WITH RECURSIVE path AS (
+    SELECT source_id, target_id, ARRAY[source_id, target_id] AS path
+    FROM edges
+    WHERE source_id = 1
+    
+    UNION ALL
+    
+    SELECT e.source_id, e.target_id, p.path || e.target_id
+    FROM edges e
+    JOIN path p ON e.source_id = p.target_id
+    WHERE NOT e.target_id = ANY(p.path)
+)
+SELECT * FROM path;
+``` 

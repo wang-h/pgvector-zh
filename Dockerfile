@@ -1,11 +1,11 @@
-# Use pgvector/pgvector:pg17 as the base image which already has pgvector installed
-FROM pgvector/pgvector:pg17
+# Use pgvector/pgvector:pg16 as the base image which already has pgvector installed
+FROM pgvector/pgvector:pg16
 
 # Set DEBIAN_FRONTEND to noninteractive to prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Arguments
-ARG PG_MAJOR=17
+ARG PG_MAJOR=16
 
 # 1. Switch main Debian/Ubuntu APT sources to a Chinese mirror (Aliyun)
 #    and PGDG sources to Tsinghua mirror for potentially faster downloads.
@@ -61,11 +61,32 @@ RUN cd /tmp/pg_jieba && mkdir -p build && cd build && \
 # 6. Clean up pg_jieba sources
 RUN rm -rf /tmp/pg_jieba
 
-# 7. Modify PostgreSQL configuration to load pg_jieba
-# Note: pgvector is already configured in the pgvector/pgvector base image
-RUN echo "shared_preload_libraries = 'pg_jieba.so,vector.so'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample
+# 7. Install Apache AGE (Graph Extension)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    unzip \
+    libreadline-dev \
+    zlib1g-dev \
+    flex \
+    bison \
+    libxml2-dev \
+    libxslt1-dev \
+    libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# 8. Clean up build dependencies
+# Copy and install AGE from local zip file instead of git clone
+COPY age-master.zip /tmp/age-master.zip
+RUN unzip /tmp/age-master.zip -d /tmp && \
+    cd /tmp/age-master && \
+    make PG_CONFIG=/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config && \
+    make PG_CONFIG=/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config install && \
+    rm -rf /tmp/age-master /tmp/age-master.zip
+
+# 8. Modify PostgreSQL configuration to load pg_jieba and AGE
+# Note: pgvector is already configured in the pgvector/pgvector base image
+RUN echo "shared_preload_libraries = 'pg_jieba.so,vector.so,age.so'" >> /usr/share/postgresql/${PG_MAJOR}/postgresql.conf.sample
+
+# 9. Clean up build dependencies
 RUN apt-get update && \
     apt-get purge -y build-essential unzip cmake && \
     apt-get purge -y postgresql-server-dev-${PG_MAJOR} && \
